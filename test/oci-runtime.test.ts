@@ -1,3 +1,7 @@
+import { mkdtempSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { prepareDeviceLinks } from "../src/oci-runtime/worker.ts";
 import { describe, expect, test } from "bun:test";
 import { validateSpec, type Spec } from "../src/oci-runtime/spec.ts";
 import { cgroupPath } from "../src/oci-runtime/cgroup.ts";
@@ -43,5 +47,35 @@ describe("experimental OCI profile", () => {
     expect(() => validateSeccomp({ defaultAction: "SCMP_ACT_ALLOW" })).toThrow();
     expect(() => validateSeccomp({ defaultAction: "SCMP_ACT_ERRNO", syscalls: [{ names: ["clone"], action: "SCMP_ACT_ALLOW", args: [{ index: 0, value: 1, op: "unknown" }] }] })).toThrow();
     expect(() => validateSeccomp({ defaultAction: "SCMP_ACT_ERRNO", syscalls: [{ names: ["clone"], action: "SCMP_ACT_ALLOW", args: [{ index: 0, value: 2 ** 64, op: "SCMP_CMP_EQ" }] }] })).toThrow();
+  });
+});
+
+
+describe("existing device aliases", () => {
+  test("replaces regular files and dangling links without touching their targets", () => {
+    const root = mkdtempSync(join(tmpdir(), "bunc-device-test-")), dev = join(root, "dev");
+    try {
+      mkdirSync(dev);
+      writeFileSync(join(root, "outside"), "preserve");
+      writeFileSync(join(dev, "stdin"), "old entry");
+      symlinkSync("/missing-device-target", join(dev, "stdout"));
+      symlinkSync(join(root, "outside"), join(dev, "stderr"));
+      prepareDeviceLinks(dev);
+      prepareDeviceLinks(dev);
+      expect(readlinkSync(join(dev, "stdin"))).toBe("/proc/self/fd/0");
+      expect(readlinkSync(join(dev, "stdout"))).toBe("/proc/self/fd/1");
+      expect(readlinkSync(join(dev, "stderr"))).toBe("/proc/self/fd/2");
+      expect(readFileSync(join(root, "outside"), "utf8")).toBe("preserve");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  test("refuses directories and a symlinked device parent", () => {
+    const root = mkdtempSync(join(tmpdir(), "bunc-device-test-")), dev = join(root, "dev");
+    try {
+      mkdirSync(dev); mkdirSync(join(dev, "fd")); writeFileSync(join(dev, "fd", "keep"), "preserve");
+      expect(() => prepareDeviceLinks(dev)).toThrow("Cannot replace device directory");
+      expect(readFileSync(join(dev, "fd", "keep"), "utf8")).toBe("preserve");
+      symlinkSync(dev, join(root, "alias"));
+      expect(() => prepareDeviceLinks(join(root, "alias"))).toThrow("Device directory must not be a symlink");
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });

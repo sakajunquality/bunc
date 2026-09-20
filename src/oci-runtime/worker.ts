@@ -1,8 +1,20 @@
 import { prepareSeccomp } from "./seccomp.ts";
 import { dlopen, ptr, read } from "bun:ffi";
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Spec, Mount } from "./spec.ts";
+
+/** Replace only non-directory device aliases without following existing links. */
+export function prepareDeviceLinks(directory: string) {
+  const parent = lstatSync(directory);
+  if (!parent.isDirectory() || parent.isSymbolicLink()) throw new Error("Device directory must not be a symlink");
+  for (const [name, target] of [["fd", "/proc/self/fd"], ["stdin", "/proc/self/fd/0"], ["stdout", "/proc/self/fd/1"], ["stderr", "/proc/self/fd/2"], ["ptmx", "/dev/pts/ptmx"]] as const) {
+    const link = join(directory, name), existing = lstatSync(link, { throwIfNoEntry: false });
+    if (existing?.isDirectory()) throw new Error(`Cannot replace device directory: ${name}`);
+    if (existing) unlinkSync(link);
+    symlinkSync(target, link);
+  }
+}
 
 export interface WorkerConfig { spec: Spec; root: string; cgroup: string }
 /** Fresh Bun process in the container namespaces. No asynchronous work follows pivot_root. */
@@ -65,7 +77,7 @@ export function ociWorker(state: string): never {
     for (const name of ["null", "zero", "random", "urandom"]) {
       const dest = target(`/dev/${name}`, false); mount(`/dev/${name}`, dest, null, BIND);
     }
-    for (const [name, path] of [["fd", "/proc/self/fd"], ["stdin", "/proc/self/fd/0"], ["stdout", "/proc/self/fd/1"], ["stderr", "/proc/self/fd/2"], ["ptmx", "/dev/pts/ptmx"]]) symlinkSync(path!, join(root, "dev", name!));
+    prepareDeviceLinks(join(root, "dev"));
     for (const path of spec.linux.maskedPaths ?? []) {
       const dest = join(root, path);
       if (!existsSync(dest)) continue;
