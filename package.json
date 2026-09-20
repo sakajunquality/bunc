@@ -1,6 +1,6 @@
 {
   "name": "bunc",
-  "version": "0.0.0",
+  "version": "0.1.0-alpha.1",
   "private": true,
   "description": "An experimental Linux container runtime powered by Bun",
   "license": "MIT",
@@ -24,7 +24,9 @@
     "demo:docker:standalone": "bun scripts/lab.ts docker --standalone",
     "demo:apple:standalone": "bun scripts/lab.ts apple --standalone",
     "test:docker:standalone": "bun scripts/lab.ts docker --standalone --verify",
-    "test:apple:standalone": "bun scripts/lab.ts apple --standalone --verify"
+    "test:apple:standalone": "bun scripts/lab.ts apple --standalone --verify",
+    "release:prepare": "bun scripts/release.ts",
+    "release:verify": "bun scripts/verify-release.ts"
   },
   "dependencies": {
     "tar-stream": "3.2.1"

@@ -132,8 +132,9 @@ bun dist/bunc.js run /path/to/oci-layout
 bun src/runtime.ts run /path/to/oci-layout
 ```
 
-There is no npm or binary release of bunc yet; `package.json` remains private to
-prevent accidental package publication. Generated executables are ignored by Git.
+Release preparation, signed GitHub assets, and installation verification are
+documented in [the release guide](docs/RELEASING.md). `package.json` remains private
+to prevent accidental npm publication. Generated executables are ignored by Git.
 
 ## How it works
 
@@ -218,6 +219,7 @@ and both JavaScript and standalone Docker acceptance checks.
 - `src/oci/`: local OCI reading adapted from bunko, with no checkout dependency.
 - `scripts/lab.ts`: disposable Docker/Apple launcher and acceptance checks.
 - `scripts/compile.ts`: standalone Linux arm64/x64 builds.
+- `scripts/release.ts`, `scripts/verify-release.ts`: candidate preparation and verification.
 - `examples/web/`: the bunko-built example application.
 
 Code and documentation are in English. See [AGENTS.md](AGENTS.md) for contributor

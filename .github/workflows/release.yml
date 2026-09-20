@@ -1,0 +1,176 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'scripts/release*.ts'
+      - 'scripts/distribution.ts'
+      - 'scripts/verify-release.ts'
+      - 'scripts/compile.ts'
+      - 'scripts/lab.ts'
+      - 'test/release.test.ts'
+      - 'package.json'
+      - 'bun.lock'
+      - 'licenses/**'
+      - 'THIRD_PARTY_NOTICES.md'
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: bun scripts/release-preflight.ts
+      - run: bun run check
+      - run: bun run release:prepare
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bunc-candidate
+          path: dist/release/
+          if-no-files-found: error
+          compression-level: 0
+
+  verify:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bunc-candidate
+          path: .bunc-output/candidate
+      - name: Verify and execute the downloaded candidate
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          version=$(bun -p 'require("./package.json").version')
+          bun run release:verify .bunc-output/candidate "$version" "$GITHUB_SHA"
+          chmod +x ".bunc-output/candidate/bunc-linux-$ARCH"
+          test "$(".bunc-output/candidate/bunc-linux-$ARCH" version)" = "$version"
+          bun scripts/lab.ts docker --binary ".bunc-output/candidate/bunc-linux-$ARCH" --verify
+
+  attest:
+    needs: verify
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bunc-candidate
+          path: candidate
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        id: provenance
+        with:
+          subject-path: candidate/*
+      - name: Preserve the offline provenance bundle
+        env:
+          BUNDLE_PATH: ${{ steps.provenance.outputs.bundle-path }}
+        run: cp "$BUNDLE_PATH" candidate/PROVENANCE.jsonl
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bunc-signed-release
+          path: candidate/
+          if-no-files-found: error
+          compression-level: 0
+
+  verify-provenance:
+    needs: attest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bunc-signed-release
+          path: .bunc-output/candidate
+      - name: Require the exact workflow, source ref, and commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(bun -p 'require("./package.json").version')
+          bun run release:verify .bunc-output/candidate "$version" "$GITHUB_SHA" "$GITHUB_REF"
+          if gh attestation verify .bunc-output/candidate/bunc-linux-x64 \
+            --bundle .bunc-output/candidate/PROVENANCE.jsonl --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref refs/tags/v0.0.0-invalid --source-digest "$GITHUB_SHA" \
+            --deny-self-hosted-runners; then
+            echo 'Incorrect source identity was accepted' >&2
+            exit 1
+          fi
+
+  publish:
+    needs: verify-provenance
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bunc-signed-release
+          path: .bunc-output/candidate
+      - name: Upload as draft, verify consumer downloads, then publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version=$(bun -p 'require("./package.json").version')
+          bun run release:verify .bunc-output/candidate "$version" "$GITHUB_SHA" "$GITHUB_REF"
+          bun -e 'import {releaseNotes} from "./scripts/distribution.ts"; import p from "./package.json"; await Bun.write(process.env.RUNNER_TEMP + "/bunc-notes.md", releaseNotes(await Bun.file("docs/RELEASE_NOTES.md").text(), p.version));'
+          flags=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then flags+=(--prerelease); fi
+          gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" \
+            --notes-file "$RUNNER_TEMP/bunc-notes.md" "${flags[@]}" .bunc-output/candidate/*
+          gh release download "$RELEASE_TAG" --dir .bunc-output/downloaded
+          bun run release:verify .bunc-output/downloaded "$version" "$GITHUB_SHA" "$GITHUB_REF"
+          chmod +x .bunc-output/downloaded/bunc-linux-x64
+          test "$(.bunc-output/downloaded/bunc-linux-x64 version)" = "$version"
+          flags=(--latest)
+          if [[ "$RELEASE_TAG" == *-* ]]; then flags=(--latest=false); fi
+          gh release edit "$RELEASE_TAG" --draft=false "${flags[@]}"

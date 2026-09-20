@@ -5,8 +5,10 @@ import { join, resolve, posix } from "node:path";
 import { readFileSync } from "node:fs";
 import { unpack, imagePath } from "./rootfs.ts";
 import { execute, type Launch } from "./worker.ts";
+import metadata from "../package.json";
 
-if (["--help", "-h"].includes(process.argv[2] ?? "")) { console.log("Usage: bunc run /path/to/oci-layout\nExperimental Linux container runtime powered by Bun. See README.md for requirements."); process.exit(0); }
+if (["version", "--version", "-v"].includes(process.argv[2] ?? "")) { console.log(metadata.version); process.exit(0); }
+if (["--help", "-h"].includes(process.argv[2] ?? "")) { console.log("Usage: bunc run /path/to/oci-layout\n       bunc version\nExperimental Linux container runtime powered by Bun. See README.md for requirements."); process.exit(0); }
 if (process.platform !== "linux" || !["arm64", "x64"].includes(process.arch)) throw new Error("This prototype needs Linux arm64/amd64. Use the macOS experiment launcher.");
 if (process.argv[2] === "--worker") execute(JSON.parse(await readFile(process.argv[3]!, "utf8")));
 if (process.getuid?.() !== 0) throw new Error("This experiment requires root in its disposable Linux environment");
