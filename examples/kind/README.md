@@ -75,6 +75,8 @@ folder is mounted into either application.
 
 `bunc --experimental-oci` accepts the subset used by these examples:
 `create`, `start`, `state`, `kill`, `delete`, `ps`, and `features`.
+`kill --all` supports SIGKILL through the kernel cgroup kill interface; other
+signals target init.
 containerd supplies the rootfs and process configuration; bunc does not unpack an
 image in this mode. The existing `bunc run OCI_LAYOUT` path is unchanged.
 

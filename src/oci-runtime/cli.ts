@@ -88,9 +88,12 @@ export async function ociCli(args: string[]) {
         const signals: Record<string, number> = { TERM: 15, SIGTERM: 15, KILL: 9, SIGKILL: 9, INT: 2, SIGINT: 2, HUP: 1, SIGHUP: 1, QUIT: 3, SIGQUIT: 3 };
         const value = signals[sig ?? ""] ?? Number(sig);
         if (!Number.isInteger(value) || value < 1 || value > 64) throw new Error("Invalid signal");
-        if (v.all && value !== 9 && value !== 15) throw new Error("--all supports TERM and KILL only");
-        // The private PID namespace dies with init, including all descendants.
-        if (alive(s)) signal(s, value); else if (!v.all) throw new Error("container not running");
+        if (v.all) {
+          if (value !== 9) throw new Error("--all supports SIGKILL only in the experimental profile");
+          // The kernel atomically kills the cgroup, including processes that race
+          // with init exit. Empty cgroups succeed during containerd exit cleanup.
+          writeFileSync(join(s.cgroup, "cgroup.kill"), "1");
+        } else if (alive(s)) signal(s, value); else throw new Error("container not running");
         break;
       }
       case "ps": console.log(JSON.stringify(s.status === "stopped" ? [] : cgroupPids(s.cgroup))); break;
