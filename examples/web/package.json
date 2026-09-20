@@ -1,0 +1,9 @@
+{
+  "name": "bunc-web-demo",
+  "version": "1.0.0",
+  "private": true,
+  "bunko": {
+    "entrypoint": "server.ts",
+    "env": { "PORT": "8080", "EXPERIMENT_MESSAGE": "Hello from a bunko image on a Bun runtime" }
+  }
+}

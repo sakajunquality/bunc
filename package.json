@@ -1,0 +1,33 @@
+{
+  "name": "bunc",
+  "version": "0.0.0",
+  "private": true,
+  "description": "An experimental Linux container runtime powered by Bun",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "bun": "1.4.2"
+  },
+  "bin": {
+    "bunc": "./src/runtime.ts"
+  },
+  "scripts": {
+    "build": "bun build src/runtime.ts --target=bun --outfile=dist/bunc.js",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "check": "bun run typecheck && bun test",
+    "demo:docker": "bun scripts/lab.ts docker",
+    "demo:apple": "bun scripts/lab.ts apple",
+    "test:docker": "bun scripts/lab.ts docker --verify",
+    "test:apple": "bun scripts/lab.ts apple --verify"
+  },
+  "dependencies": {
+    "tar-stream": "3.2.1"
+  },
+  "devDependencies": {
+    "@sakajunquality/bunko": "0.12.5",
+    "@types/bun": "1.4.2",
+    "@types/tar-stream": "3.1.4",
+    "typescript": "7.0.2"
+  }
+}

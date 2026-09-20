@@ -1,0 +1,9 @@
+bunc includes OCI image-reading code adapted from bunko:
+https://github.com/sakajunquality/bunko
+Source revision: c79554340a0d4d7658373a7919ee8d0d5cbc455a
+
+Copyright (c) 2026 sakajunquality
+Licensed under the MIT License, reproduced in LICENSE.
+
+The adapted files are in src/oci/. Registry transports and builder-specific
+invocation handling have been removed. bunc does not require a bunko checkout.

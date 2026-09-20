@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.bunc-output/
+.DS_Store
+.env
+.env.*
+*.log
