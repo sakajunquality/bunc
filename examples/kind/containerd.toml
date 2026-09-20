@@ -1,0 +1,7 @@
+# Append only to a disposable kind node's v2 configuration.
+# The default runc handler is preserved for normal Kubernetes system pods.
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.bunc]
+  runtime_type = "io.containerd.runc.v2"
+  [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.bunc.options]
+    BinaryName = "/usr/local/bin/bunc-oci"
+    SystemdCgroup = true
