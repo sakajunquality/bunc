@@ -13,7 +13,7 @@ const server = Bun.serve({
       message: process.env.EXPERIMENT_MESSAGE,
       runtime: "bun", bun: Bun.version, pid: process.pid,
       uid: process.getuid!(), gid: process.getgid!(), cwd: process.cwd(), hostname: hostname(),
-      isolatedRoot: !existsSync("/runtime/bunc.js") && !existsSync("/outside-marker"),
+      isolatedRoot: !existsSync("/runtime") && !existsSync("/outside-marker"),
       writableTmp, readonlyRoot: rootMount?.split(" ")[5]?.split(",").includes("ro"),
       hostEnvironmentAbsent: !process.env.OUTER_SECRET_SENTINEL,
       proc: readFileSync("/proc/self/status", "utf8").split("\n").filter(line => /^(Name|Pid|PPid|NSpid|Uid|Gid|CapEff|NoNewPrivs):/.test(line)),

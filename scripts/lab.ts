@@ -1,16 +1,19 @@
 import { parseArgs } from "node:util";
 import { resolve, join } from "node:path";
-import { mkdir } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import assert from "node:assert/strict";
+import { compileBinary } from "./compile.ts";
 
 const { values, positionals } = parseArgs({ args: Bun.argv.slice(2), allowPositionals: true, options: {
-  verify: { type: "boolean", default: false }, layout: { type: "string" }, port: { type: "string", default: "18080" },
+  standalone: { type: "boolean", default: false }, verify: { type: "boolean", default: false }, layout: { type: "string" }, port: { type: "string", default: "18080" },
 } });
 const backend = positionals[0];
-if (!["docker", "apple"].includes(backend ?? "") || positionals.length !== 1) throw new Error("Usage: bun scripts/lab.ts docker|apple [--verify] [--layout DIRECTORY] [--port 18080]");
+if (!["docker", "apple"].includes(backend ?? "") || positionals.length !== 1) throw new Error("Usage: bun scripts/lab.ts docker|apple [--standalone] [--verify] [--layout DIRECTORY] [--port 18080]");
 const tool = backend === "apple" ? "container" : "docker";
 if (!Bun.which(tool)) throw new Error(`${tool} is not installed`);
-const repo = resolve(import.meta.dir, ".."), here = join(repo, "dist"), results = join(repo, ".bunc-output", "results");
+const repo = resolve(import.meta.dir, ".."), results = join(repo, ".bunc-output", "results");
+let here = join(repo, "dist");
+const resultName = `${backend}${values.standalone ? "-standalone" : ""}`;
 const layout = resolve(values.layout ?? join(repo, ".bunc-output", "image"));
 const port = Number(values.port);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Port must be between 1024 and 65535");
@@ -31,8 +34,6 @@ if (!await Bun.file(join(layout, "index.json")).exists()) {
   const build = await command([process.execPath, "x", "--no-install", "--bun", "@sakajunquality/bunko", "build", join(repo, "examples", "web"), "--base", "oven/bun:1.4.2-distroless", "--platform", `linux/${arch}`, "--push=false", "--oci-layout", layout, "--git-metadata=false"]);
   await Bun.write(join(results, "build.log"), build.stdout + build.stderr);
 }
-const bundle = await Bun.build({ entrypoints: [join(repo, "src", "runtime.ts")], target: "bun", outdir: here, naming: "bunc.js" });
-if (!bundle.success) throw new AggregateError(bundle.logs, "Runtime bundle failed");
 // Pin the disposable Linux host, independent of the image being run inside it.
 const hostImage = "docker.io/oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895";
 const name = `bunc-${backend}-${process.pid}`;
@@ -40,16 +41,30 @@ const options = backend === "apple"
   ? ["--cap-add", "ALL", "--memory", "1G", "--cpus", "2"]
   : ["--privileged", "--memory", "1g", "--cpus", "2", "-p", `127.0.0.1:${port}:8080`];
 const mount = (source: string, target: string) => `type=bind,source=${source},target=${target},readonly`;
-const start = [tool, "run", "-d", "--name", name, ...options, "--env", "OUTER_SECRET_SENTINEL=not-in-image", "--mount", mount(here, "/runtime"), "--mount", mount(layout, "/input"), "--entrypoint", "/bin/sh", hostImage, "-c", "touch /outside-marker; exec bun /runtime/bunc.js run /input"];
+// Remove the host's Bun installation only inside this disposable environment.
+// The application image still provides its own Bun after pivot_root.
+const entrypoint = values.standalone
+  ? `rm -f /usr/local/bin/bun /usr/local/bin/bunx; if command -v bun >/dev/null 2>&1; then exit 1; fi; echo 'Standalone host has no Bun executable'; touch /outside-marker; exec /runtime/bunc-linux-${process.arch} run /input`
+  : "touch /outside-marker; exec bun /runtime/bunc.js run /input";
+
 let endpoint = "", response: unknown, stopped = false;
 const began = performance.now();
 let requestedStop: (() => void) | undefined;
 const stopRequested = new Promise<void>(resolve => { requestedStop = resolve; });
 process.on("SIGINT", requestedStop!); process.on("SIGTERM", requestedStop!);
 try {
+  if (values.standalone) {
+    console.log(`Compiling a standalone Linux ${process.arch} executable...`);
+    here = await mkdtemp(join(repo, ".bunc-output", "standalone-"));
+    await compileBinary(process.arch, join(here, `bunc-linux-${process.arch}`));
+  } else {
+    const bundle = await Bun.build({ entrypoints: [join(repo, "src", "runtime.ts")], target: "bun", outdir: here, naming: "bunc.js" });
+    if (!bundle.success) throw new AggregateError(bundle.logs, "Runtime bundle failed");
+  }
+  const start = [tool, "run", "-d", "--name", name, ...options, "--env", "OUTER_SECRET_SENTINEL=not-in-image", "--mount", mount(here, "/runtime"), "--mount", mount(layout, "/input"), "--entrypoint", "/bin/sh", hostImage, "-c", entrypoint];
   console.log(`Starting ${name} with ${backend}...`);
   const started = await command(start);
-  await Bun.write(join(results, `${backend}-start.log`), started.stdout + started.stderr);
+  await Bun.write(join(results, `${resultName}-start.log`), started.stdout + started.stderr);
   if (backend === "apple") {
     const inspect = JSON.parse((await command([tool, "inspect", name])).stdout);
     const ip = inspect[0]?.status?.networks?.[0]?.ipv4Address?.split("/")[0];
@@ -86,21 +101,25 @@ try {
   await command([tool, "stop", "-t", "5", name]); stopped = true;
   const output = await command([tool, "logs", name]);
   const logs = output.stdout + output.stderr;
-  await Bun.write(join(results, `${backend}.log`), logs);
+  await Bun.write(join(results, `${resultName}.log`), logs);
   if (values.verify) {
     assert(logs.includes("Demo received SIGTERM"), "App must receive SIGTERM");
     assert(logs.includes('"event":"exit","code":0,"signal":"SIGTERM"'), "App must exit normally after SIGTERM");
     assert(logs.includes('"event":"cleanup","removed":true'), "Runtime must remove its temporary rootfs");
     const launch = logs.split("\n").find(line => line.startsWith('{"event":"launch"'));
-    await Bun.write(join(results, `${backend}.json`), JSON.stringify({ backend, endpoint, startupMs, verifiedAt: new Date().toISOString(), launch: launch ? JSON.parse(launch) : null, response, checks: ["HTTP 200", "HTTP 404", "image configuration", "PID 1", "nonroot", "isolated root", "read-only root", "writable tmp", "no host environment", "no effective capabilities", "no_new_privs", "graceful SIGTERM", "rootfs cleanup"], status: "passed" }, null, 2) + "\n");
+    assert(launch, "Runtime must log its execution mode");
+    assert.equal(JSON.parse(launch).standalone, values.standalone);
+    if (values.standalone) assert(logs.includes("Standalone host has no Bun executable"));
+    await Bun.write(join(results, `${resultName}.json`), JSON.stringify({ backend, standalone: values.standalone, endpoint, startupMs, verifiedAt: new Date().toISOString(), launch: launch ? JSON.parse(launch) : null, response, checks: ["HTTP 200", "HTTP 404", "image configuration", "PID 1", "nonroot", "isolated root", "read-only root", "writable tmp", "no host environment", "no effective capabilities", "no_new_privs", "graceful SIGTERM", "rootfs cleanup"], status: "passed" }, null, 2) + "\n");
     console.log(`${backend}: all checks passed. Results: ${results}`);
   }
 } catch (error) {
   const output = await command([tool, "logs", name], false);
-  await Bun.write(join(results, `${backend}-failure.log`), output.stdout + output.stderr);
+  await Bun.write(join(results, `${resultName}-failure.log`), output.stdout + output.stderr);
   throw error;
 } finally {
   process.off("SIGINT", requestedStop!); process.off("SIGTERM", requestedStop!);
   if (!stopped) await command([tool, "stop", "-t", "5", name], false);
-  await command([tool, "rm", name], false);
+  const removed = await command([tool, "rm", name], false);
+  if (values.standalone && removed.code === 0) await rm(here, { recursive: true, force: true });
 }

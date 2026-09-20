@@ -29,12 +29,17 @@ bun run demo:docker
 # Or with Apple Container installed:
 container system start
 bun run demo:apple
+
+# Use a standalone bunc executable inside either backend:
+bun run demo:docker:standalone
+bun run demo:apple:standalone
 ```
 
 The first run uses the pinned bunko dev dependency to build `examples/web` into
 `.bunc-output/image`. The application base is `oven/bun:1.4.2-distroless`; this
 initial build needs network access. Subsequent runs reuse that layout. The
 runtime itself reads only local image files and does not contact registries.
+See [the web example](examples/web/README.md) for both execution modes.
 
 Open the URL printed by the launcher. Docker uses `http://127.0.0.1:18080/`;
 Apple Container uses the VM's assigned IPv4 address on port 8080. Press Ctrl-C
@@ -72,23 +77,63 @@ Use `linux/amd64` on an x64 host. bunc executes the native Linux architecture;
 it does not provide emulation. The outer Linux host image is independently pinned
 by digest in `scripts/lab.ts`.
 
-## Direct execution on Linux
+## Standalone Linux executables
 
-The runtime needs Bun 1.4.2, glibc, util-linux `unshare`, root privileges, and
-permission to create namespaces and mounts. Start with the disposable demo
-backend above rather than running it as root on a machine you rely on.
+[bun build --compile](https://bun.com/docs/bundler/executables) embeds bunc's code,
+JavaScript dependencies, and Bun runtime into one executable. Build on macOS or
+Linux with Bun 1.4.2:
 
-Inside a suitable disposable Linux host:
+```sh
+bun run build:binary arm64  # dist/bin/bunc-linux-arm64
+bun run build:binary x64    # dist/bin/bunc-linux-x64
+```
+
+Omit the architecture to use the build machine's architecture; the target OS is
+always Linux. The compiler may download the corresponding Bun target runtime on
+the first build. The output runs without a separate Bun installation or
+node_modules. Environment-file and bunfig auto-loading are disabled in the
+compiled executable.
+
+Copy the matching binary into a suitable disposable Linux environment and run:
+
+```sh
+./bunc-linux-arm64 run /path/to/oci-layout
+```
+
+The executable still requires **Linux, glibc, util-linux `unshare`, root privileges,
+and permission to create namespaces and mounts**. It is not statically linked,
+does not embed `unshare`, and does not provide a Linux VM on macOS. The application
+image separately provides its executable and runtime. For the web example, that
+means the application's own Bun remains inside its OCI image.
+
+The namespace worker re-executes the same compiled binary, so no extracted
+JavaScript entrypoint is needed. The arm64 executable built with Bun 1.4.2 is
+approximately 78 MiB; size depends on the compiler and target.
+
+```sh
+# Test without a separately installed Bun in the disposable Linux host:
+bun run test:docker:standalone
+bun run test:apple:standalone
+```
+
+These checks remove the outer host's Bun executable, mount only the generated
+binary directory and image layout, and verify startup, HTTP, isolation probes,
+signal delivery, and cleanup. Each standalone demo compiles into a private
+`.bunc-output/standalone-*` directory so simultaneous demos do not replace each
+other's running executable. Successful teardown removes that directory. The
+macOS demo launcher and build steps themselves still use Bun.
+
+The JavaScript distribution remains available for development:
 
 ```sh
 bun run build
 bun dist/bunc.js run /path/to/oci-layout
+# Or from a checkout with dependencies installed:
+bun src/runtime.ts run /path/to/oci-layout
 ```
 
-`bun src/runtime.ts run /path/to/oci-layout` also works from a checkout with its
-dependencies installed. `bun dist/bunc.js --help` prints the command syntax.
-There is no npm or binary release of bunc yet; `package.json` is marked private
-to prevent accidental package publication.
+There is no npm or binary release of bunc yet; `package.json` remains private to
+prevent accidental package publication. Generated executables are ignored by Git.
 
 ## How it works
 
@@ -155,21 +200,24 @@ bun install --frozen-lockfile --ignore-scripts
 bun run check
 bun run build
 bun run test:docker
+bun run test:docker:standalone
 # On an Apple silicon Mac with Apple Container running:
 bun run test:apple
+bun run test:apple:standalone
 ```
 
 Unit tests cover OCI selection, corrupted/missing content, compression and
 DiffID validation, whiteouts, traversal rejection, and image symlink handling.
 Acceptance results and logs are written to `.bunc-output/results/` and are not
 committed. A single GitHub Actions job runs type checking, unit tests, bundling,
-and the Docker acceptance checks.
+and both JavaScript and standalone Docker acceptance checks.
 
 - `src/runtime.ts`: supervisor, image process configuration, signals, cleanup.
 - `src/worker.ts`: namespace worker and Linux syscalls.
 - `src/rootfs.ts`: rootfs extraction and image path resolution.
 - `src/oci/`: local OCI reading adapted from bunko, with no checkout dependency.
 - `scripts/lab.ts`: disposable Docker/Apple launcher and acceptance checks.
+- `scripts/compile.ts`: standalone Linux arm64/x64 builds.
 - `examples/web/`: the bunko-built example application.
 
 Code and documentation are in English. See [AGENTS.md](AGENTS.md) for contributor
