@@ -44,7 +44,7 @@ const options = backend === "apple"
 const mount = (source: string, target: string) => `type=bind,source=${source},target=${target},readonly`;
 // Remove the host's Bun installation only inside this disposable environment.
 // The application image still provides its own Bun after pivot_root.
-const entrypoint = values.standalone
+const entrypoint = standalone
   ? `rm -f /usr/local/bin/bun /usr/local/bin/bunx; if command -v bun >/dev/null 2>&1; then exit 1; fi; echo 'Standalone host has no Bun executable'; touch /outside-marker; exec /runtime/bunc-linux-${process.arch} run /input`
   : "touch /outside-marker; exec bun /runtime/bunc.js run /input";
 
