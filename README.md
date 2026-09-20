@@ -8,7 +8,7 @@ Bun FFI and Linux syscalls. The included example runs an unchanged
 [bunko](https://github.com/sakajunquality/bunko)-built Bun web application.
 
 The name is inspired by runc. **bunc is an experiment, not a drop-in replacement
-for runc or an implementation of the OCI Runtime Specification.** Use trusted
+for runc or a conformant implementation of the OCI Runtime Specification.** Use trusted
 images in a disposable development environment. It is not a production security
 boundary; see [SECURITY.md](SECURITY.md).
 
@@ -136,6 +136,19 @@ Release preparation, signed GitHub assets, and installation verification are
 documented in [the release guide](docs/RELEASING.md). `package.json` remains private
 to prevent accidental npm publication. Generated executables are ignored by Git.
 
+## Kubernetes / kind experiments
+
+[The kind examples](examples/kind/README.md) exercise both a privileged Pod running
+bunc inside it and a RuntimeClass whose containerd shim invokes bunc directly.
+Run `bun run test:kind` from a source checkout to build the examples, create a
+separate disposable cluster, verify both paths, and clean up. The initial
+`v0.1.0-alpha.1` release predates this integration.
+
+The RuntimeClass path is an explicit `--experimental-oci` profile with a limited
+lifecycle interface, cgroup v2 controls and native seccomp. It requires additional
+Linux facilities supplied by the kind node. It is not a general runc replacement;
+see the example's requirements and unsupported features before using it.
+
 ## How it works
 
 ```text
@@ -179,7 +192,7 @@ allocates 2 CPUs and 1 GiB RAM.
 - Bounded unpacking: 512 MiB decoded per layer, 1 GiB cumulative file contents,
   and 100,000 archive entries. Filesystems are copied, not overlay-mounted.
 
-**Not implemented:** OCI runtime bundles or lifecycle API, registry pull/auth,
+**Not implemented in the image-layout `run` path:** OCI runtime bundles or lifecycle API, registry pull/auth,
 rootless/user namespaces, seccomp, a complete capability policy, per-app cgroups,
 independent networking/CNI, DNS-file injection, volumes, healthchecks, image
 `StopSignal`, exec/attach, emulation, complete tar/xattr/device support, or a
@@ -210,14 +223,16 @@ bun run test:apple:standalone
 Unit tests cover OCI selection, corrupted/missing content, compression and
 DiffID validation, whiteouts, traversal rejection, and image symlink handling.
 Acceptance results and logs are written to `.bunc-output/results/` and are not
-committed. A single GitHub Actions job runs type checking, unit tests, bundling,
-and both JavaScript and standalone Docker acceptance checks.
+committed. GitHub Actions runs type checking, unit tests, bundling, both Docker execution
+modes, and the kind experiment on native Linux amd64 and arm64.
 
 - `src/runtime.ts`: supervisor, image process configuration, signals, cleanup.
 - `src/worker.ts`: namespace worker and Linux syscalls.
 - `src/rootfs.ts`: rootfs extraction and image path resolution.
 - `src/oci/`: local OCI reading adapted from bunko, with no checkout dependency.
 - `scripts/lab.ts`: disposable Docker/Apple launcher and acceptance checks.
+- `src/oci-runtime/`: the opt-in containerd lifecycle profile and native bootstrap.
+- `scripts/kind.ts`, `examples/kind/`: disposable Kubernetes acceptance for both paths.
 - `scripts/compile.ts`: standalone Linux arm64/x64 builds.
 - `scripts/release.ts`, `scripts/verify-release.ts`: candidate preparation and verification.
 - `examples/web/`: the bunko-built example application.

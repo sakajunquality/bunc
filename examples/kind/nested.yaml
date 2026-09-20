@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bunc-nested
+spec:
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  containers:
+    - name: runtime
+      image: docker.io/library/bunc-nested:kind
+      imagePullPolicy: Never
+      env:
+        - name: OUTER_SECRET_SENTINEL
+          value: bunc-kind-probe
+      securityContext:
+        privileged: true
+        readOnlyRootFilesystem: true
+      ports:
+        - containerPort: 8080
+      readinessProbe:
+        httpGet:
+          path: /
+          port: 8080
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: "2"
+          memory: 1Gi
+      volumeMounts:
+        - name: scratch
+          mountPath: /tmp
+  volumes:
+    - name: scratch
+      emptyDir:
+        sizeLimit: 1Gi

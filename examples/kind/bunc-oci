@@ -1,0 +1,4 @@
+#!/bin/sh
+# Install only inside the disposable kind node.
+export OUTER_SECRET_SENTINEL=bunc-kind-probe
+exec /usr/local/bin/bunc --experimental-oci "$@"
