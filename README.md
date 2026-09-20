@@ -142,7 +142,8 @@ The glibc requirement applies to the bunc worker's environment; application
 compatibility is limited to what has actually been tested.
 
 Local acceptance has exercised arm64 with both Docker and Apple Container 1.0.0.
-The GitHub Actions workflow exercises Docker on Linux amd64. The checks cover
+The GitHub Actions workflow is configured to exercise Docker on Linux amd64;
+native amd64 acceptance has not yet been verified. The checks cover
 HTTP 200/404, image configuration, PID 1, nonroot execution, root visibility,
 read-only rootfs, writable tmp, exclusion of outer environment variables, zero
 effective capabilities, `no_new_privs`, graceful SIGTERM, and rootfs cleanup.
