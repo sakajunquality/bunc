@@ -25,3 +25,5 @@ jobs:
       - run: bun dist/bunc.js --help
       - name: Run the bunko-built web app through bunc
         run: bun run test:docker
+      - name: Run the standalone binary without a host Bun installation
+        run: bun run test:docker:standalone

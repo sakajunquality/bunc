@@ -49,8 +49,10 @@ try {
   const pidFile = join(state, "worker.pid");
   const launch: Launch = { root: image.root, argv, cwd, env: [...env].map(([key, value]) => `${key}=${value}`), uid, gid, hostname: "bunc", pidFile };
   const launchPath = join(state, "launch.json"); await writeFile(launchPath, JSON.stringify(launch), { mode: 0o600 });
-  console.error(JSON.stringify({ event: "launch", image: image.digest, platform: image.platform, argv, cwd, uid, gid, network: "shared with disposable Linux host", rootfs: "read-only", runtime: "Bun + Linux syscalls; unshare bootstrap" }));
-  const child = Bun.spawn(["unshare", "--mount", "--pid", "--uts", "--ipc", "--fork", "--kill-child=SIGTERM", process.execPath, resolve(process.argv[1]!), "--worker", launchPath], { env: { PATH: "/usr/local/bin:/usr/bin:/bin" }, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+  console.error(JSON.stringify({ event: "launch", image: image.digest, platform: image.platform, argv, cwd, uid, gid, network: "shared with disposable Linux host", rootfs: "read-only", standalone: Bun.isStandaloneExecutable, runtime: "Bun + Linux syscalls; unshare bootstrap" }));
+  // Compiled executables contain their entrypoint; argv[1] is not an on-disk script.
+  const workerCommand = Bun.isStandaloneExecutable ? [process.execPath] : [process.execPath, resolve(process.argv[1]!)];
+  const child = Bun.spawn(["unshare", "--mount", "--pid", "--uts", "--ipc", "--fork", "--kill-child=SIGTERM", ...workerCommand, "--worker", launchPath], { env: { PATH: "/usr/local/bin:/usr/bin:/bin" }, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
   let signal: string | undefined, timer: ReturnType<typeof setTimeout> | undefined;
   const forward = (name: NodeJS.Signals) => {
     try {
