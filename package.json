@@ -27,7 +27,12 @@
     "test:apple:standalone": "bun scripts/lab.ts apple --standalone --verify",
     "release:prepare": "bun scripts/release.ts",
     "release:verify": "bun scripts/verify-release.ts",
-    "test:kind": "bun scripts/kind.ts"
+    "test:kind": "bun scripts/kind.ts",
+    "test:sandbox:docker": "bun scripts/sandbox-lab.ts docker",
+    "test:sandbox:apple": "bun scripts/sandbox-lab.ts apple",
+    "test:sandbox:docker:standalone": "bun scripts/sandbox-lab.ts docker --standalone",
+    "test:sandbox:apple:standalone": "bun scripts/sandbox-lab.ts apple --standalone",
+    "bench:sandbox:docker": "bun scripts/sandbox-lab.ts docker --benchmark"
   },
   "dependencies": {
     "tar-stream": "3.2.1"

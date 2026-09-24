@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "code": "const { values } = await Bun.file('/input/data.json').json();\nconst sum = values.reduce((total, value) => total + value, 0);\nawait Bun.write('/output/result.json', JSON.stringify({ sum }));\nawait Bun.write('/output/report.txt', `Processed ${values.length} values; total ${sum}.\\n`);\nconsole.log('done');\n",
+  "inputs": [
+    { "path": "data.json", "encoding": "utf8", "data": "{\"values\":[1,2,3]}" }
+  ],
+  "limits": { "timeoutMs": 1000, "memoryMiB": 256, "stdioBytes": 65536 }
+}

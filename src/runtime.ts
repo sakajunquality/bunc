@@ -8,10 +8,20 @@ import { execute, type Launch } from "./worker.ts";
 import metadata from "../package.json";
 import { ociCli } from "./oci-runtime/cli.ts";
 import { ociWorker } from "./oci-runtime/worker.ts";
+import { sandboxCli, sandboxHelp } from "./sandbox/cli.ts";
+import { sandboxWorker } from "./sandbox/worker.ts";
+import { preparationWorker } from "./sandbox/preparation.ts";
 
 if (["version", "--version", "-v"].includes(process.argv[2] ?? "")) { console.log(metadata.version); process.exit(0); }
-if (["--help", "-h"].includes(process.argv[2] ?? "")) { console.log("Usage: bunc run /path/to/oci-layout\n       bunc version\nExperimental Linux container runtime powered by Bun. See README.md for requirements."); process.exit(0); }
+if (["--help", "-h"].includes(process.argv[2] ?? "")) { console.log("Usage: bunc run /path/to/oci-layout\n       bunc sandbox --help\n       bunc version\nExperimental Linux container runtime powered by Bun. See README.md for requirements."); process.exit(0); }
+if (process.argv[2] === "sandbox" && (process.argv.length === 3 || process.argv.slice(3).some(arg => ["--help", "-h"].includes(arg)))) { console.log(sandboxHelp); process.exit(0); }
 if (process.platform !== "linux" || !["arm64", "x64"].includes(process.arch)) throw new Error("This prototype needs Linux arm64/amd64. Use the macOS experiment launcher.");
+if (process.argv[2] === "--sandbox-worker") sandboxWorker(process.argv[3]!);
+if (process.argv[2] === "--sandbox-prepare-worker") await preparationWorker(process.argv[3]!);
+if (process.argv[2] === "sandbox" || process.argv[2] === "--sandbox-supervisor") {
+  try { process.exit(await sandboxCli(process.argv.slice(3), process.argv[2] === "--sandbox-supervisor")); }
+  catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exit(2); }
+}
 if (process.argv[2] === "--oci-worker") ociWorker(process.argv[3]!);
 if (process.argv[2] === "--worker") execute(JSON.parse(await readFile(process.argv[3]!, "utf8")));
 if (process.getuid?.() !== 0) throw new Error("This experiment requires root in its disposable Linux environment");

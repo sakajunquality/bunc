@@ -7,6 +7,14 @@ import { BlobStore } from "./oci/blob-store.ts";
 import { LayoutSource, resolveBase } from "./oci/source.ts";
 import { decodeLayer } from "./oci/decode.ts";
 
+export interface UnpackLimits {
+  maxCompressedBytes?: number;
+  maxDecodedLayerBytes?: number;
+  maxFilesystemBytes?: number;
+  maxEntries?: number;
+  onProgress?: (progress: { filesystemBytes: number; entries: number }) => void;
+}
+
 function pathName(name: string): string {
   if (name.includes("\0") || name.startsWith("/") || name.split("/").includes("..")) throw new Error(`Unsafe archive path: ${JSON.stringify(name)}`);
   return posix.normalize(name).replace(/^\.\//, "").replace(/\/$/, "");
@@ -25,15 +33,24 @@ async function parents(root: string, name: string) {
 }
 
 /** Intentionally bounded, copy-based unpacker for trusted experimental images. */
-export async function unpack(layout: string, state: string) {
+export async function unpack(layout: string, state: string, options: UnpackLimits = {}) {
+  const limits = {
+    maxCompressedBytes: options.maxCompressedBytes ?? 1024 ** 3,
+    maxDecodedLayerBytes: options.maxDecodedLayerBytes ?? 512 * 1024 ** 2,
+    maxFilesystemBytes: options.maxFilesystemBytes ?? 1024 ** 3,
+    maxEntries: options.maxEntries ?? 100_000,
+  };
+  for (const [name, value] of Object.entries(limits)) if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${name} must be a positive safe integer`);
   const root = join(state, "rootfs"); await mkdir(root, { mode: 0o755 });
   const store = new BlobStore(join(state, "cas"));
   const platform = { os: "linux" as const, architecture: process.arch === "arm64" ? "arm64" as const : "amd64" as const };
-  const image = await resolveBase(new LayoutSource(layout), platform, store);
+  const image = await resolveBase(new LayoutSource(layout), platform, store, { maxLayerBytes: limits.maxCompressedBytes });
+  const compressedBytes = image.manifest.layers.reduce((sum, layer) => sum + layer.size, 0);
+  if (!Number.isSafeInteger(compressedBytes) || compressedBytes > limits.maxCompressedBytes) throw new Error("Image compressed content exceeds preparation limit");
   let total = 0, count = 0;
   for (const [index, layer] of image.manifest.layers.entries()) {
     const decoded = join(state, `layer-${index}.tar`);
-    await decodeLayer(store, layer, image.config.rootfs.diff_ids[index]!, decoded, 512 * 1024 ** 2);
+    await decodeLayer(store, layer, image.config.rootfs.diff_ids[index]!, decoded, limits.maxDecodedLayerBytes);
     const entries: { name: string; type: string; mode: number; uid: number; gid: number; target: string; data: Buffer }[] = [];
     const extract = tar.extract();
     extract.on("entry", (header, stream, next) => {
@@ -42,10 +59,11 @@ export async function unpack(layout: string, state: string) {
         for await (const chunk of stream) {
           if (!Buffer.isBuffer(chunk)) throw new Error("Expected binary tar data");
           total += chunk.length;
-          if (total > 1024 ** 3) throw new Error("Image exceeds the 1 GiB prototype limit");
+          if (total > limits.maxFilesystemBytes) throw new Error("Image filesystem content exceeds preparation limit");
           chunks.push(Buffer.from(chunk));
         }
-        if (++count > 100_000) throw new Error("Image has too many archive entries");
+        if (++count > limits.maxEntries) throw new Error("Image has too many archive entries");
+        options.onProgress?.({ filesystemBytes: total, entries: count });
         if (name !== "." && name !== "") entries.push({ name, type: header.type ?? "file", mode: (header.mode ?? 0o644) & 0o1777, uid: header.uid ?? 0, gid: header.gid ?? 0, target: header.linkname ?? "", data: Buffer.concat(chunks) });
         next();
       })().catch(error => extract.destroy(error));
