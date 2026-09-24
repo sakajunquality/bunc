@@ -61,6 +61,16 @@ export interface LinuxSandboxProcess {
 const runIdPattern = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
 const ownerPattern = /^[a-f0-9]{32}$/;
 
+export function hasCgroupV2(root = "/sys/fs/cgroup"): boolean {
+  // cgroup.kill is deliberately absent from the real root cgroup. Probe it in
+  // an ordinary child after delegation has been validated.
+  return existsSync(join(root, "cgroup.controllers"));
+}
+
+export function requireCgroupKill(cgroup: string): void {
+  if (!existsSync(join(cgroup, "cgroup.kill"))) throw new Error("cgroup.kill is unavailable (Linux 5.14+ required)");
+}
+
 function directCgroupPath(parent: string, runId: string): string {
   if (!runIdPattern.test(runId)) throw new Error("Invalid sandbox run ID");
   const resolvedParent = realpathSync(parent);
@@ -306,7 +316,7 @@ export function doctorLinuxSandbox(input: { cgroupParent?: string } = {}): Linux
   const add = (name: string, ok: boolean, message: string) => checks.push({ name, ok, message });
   add("platform", process.platform === "linux" && ["x64", "arm64"].includes(process.arch), `${process.platform}/${process.arch}`);
   add("identity", process.getuid?.() === 0, process.getuid?.() === 0 ? "root" : `uid ${process.getuid?.() ?? "unknown"}`);
-  add("cgroup-v2", existsSync("/sys/fs/cgroup/cgroup.controllers") && existsSync("/sys/fs/cgroup/cgroup.kill"), "cgroup v2 with cgroup.kill required");
+  add("cgroup-v2", hasCgroupV2(), "cgroup v2 unified hierarchy required");
   const seccomp = checkSandboxSeccompSupport(); add("seccomp", seccomp.available, seccomp.message);
   const openat2 = probeOpenat2(); add("openat2", openat2.ok, openat2.message);
   add("mount-namespace", existsSync("/proc/self/ns/mnt"), "mount namespace handle");
@@ -320,7 +330,8 @@ export function doctorLinuxSandbox(input: { cgroupParent?: string } = {}): Linux
       if (!missing.length && process.getuid?.() === 0) {
         const probe = join(parent, `bunc-doctor-${process.pid}`);
         try {
-          mkdirSync(probe); writeControl(probe, "memory.max", 32 * 1024 * 1024); writeControl(probe, "pids.max", 4);
+          mkdirSync(probe); requireCgroupKill(probe);
+          writeControl(probe, "memory.max", 32 * 1024 * 1024); writeControl(probe, "pids.max", 4);
           restrictDevices(probe); rmdirSync(probe);
           add("enforcement-probe", true, "cgroup controls and device BPF attach succeeded");
         } catch (error) { add("enforcement-probe", false, String(error)); }

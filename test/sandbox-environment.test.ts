@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { gzipSync } from "node:zlib";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import tar from "tar-stream";
@@ -8,7 +8,7 @@ import { BlobStore } from "../src/oci/blob-store.ts";
 import { sha256 } from "../src/oci/digest.ts";
 import { media, type Descriptor } from "../src/oci/types.ts";
 import { environmentDescriptorDigest, inProcessPreparationExecutor, inspectPreparedCache, inspectPreparedEnvironments, openPreparedEnvironment, parseEnvironmentDescriptor, prepareEnvironment, preparedEnvironmentKey, removeIncompletePreparations, removePreparedEnvironments, SANDBOX_RUNTIME_FLAGS, type EnvironmentDescriptor, type PrepareEnvironmentOptions } from "../src/sandbox/environment.ts";
-import { acquireStateRoot } from "../src/sandbox/state.ts";
+import { acquireStateRoot, createJobJournal } from "../src/sandbox/state.ts";
 
 const directories: string[] = [];
 afterEach(async () => { for (const path of directories.splice(0)) await rm(path, { recursive: true, force: true }); });
@@ -94,6 +94,84 @@ test("detects mutation of protected prepared interpreter metadata", async () => 
   await expect(openPreparedEnvironment(f.stateRoot, f.descriptor)).rejects.toThrow("metadata changed");
 });
 
+test("reports, accounts for, removes, and reprepares invalid cache entries", async () => {
+  const f = await fixture();
+  const otherDescriptor = { ...f.descriptor, policyRevision: "offline-v2" };
+  const thirdDescriptor = { ...f.descriptor, policyRevision: "offline-v3" };
+  const damaged = await prepare({ stateRoot: f.stateRoot, layout: f.layout, descriptor: f.descriptor, minimumFreeBytes: 1 });
+  const unaffected = await prepare({ stateRoot: f.stateRoot, layout: f.layout, descriptor: otherDescriptor, minimumFreeBytes: 1 });
+  await writeFile(damaged.interpreterHostPath, "changed");
+
+  const invalid = await inspectPreparedCache(f.stateRoot);
+  expect(invalid.entries.map((entry) => entry.key)).toEqual([unaffected.key]);
+  expect(invalid.invalid).toEqual([{ key: damaged.key, error: expect.stringContaining("metadata changed") }]);
+  expect(invalid.sizeBytes).toBeGreaterThan(0);
+  await expect(prepare({ stateRoot: f.stateRoot, layout: f.layout, descriptor: thirdDescriptor, maxPreparedEntries: 2, minimumFreeBytes: 1 })).rejects.toThrow("entry capacity");
+
+  const repaired = await prepare({ stateRoot: f.stateRoot, layout: f.layout, descriptor: f.descriptor, maxPreparedEntries: 2, minimumFreeBytes: 1 });
+  expect(await readFile(repaired.interpreterHostPath, "utf8")).toBe("bun");
+  expect((await inspectPreparedCache(f.stateRoot)).entries.map((entry) => entry.key).sort()).toEqual([repaired.key, unaffected.key].sort());
+
+  await rm(join(f.stateRoot, "prepared", repaired.key, "prepared.json"));
+  await prepare({ stateRoot: f.stateRoot, layout: f.layout, descriptor: f.descriptor, maxPreparedEntries: 2, minimumFreeBytes: 1 });
+  await writeFile(repaired.interpreterHostPath, "changed again");
+  const lease = await acquireStateRoot(f.stateRoot);
+  expect(await removePreparedEnvironments(lease, [repaired.key], new Set())).toEqual([repaired.key]);
+  await lease.release();
+  const afterRemoval = await inspectPreparedCache(f.stateRoot);
+  expect(afterRemoval.entries.map((entry) => entry.key)).toEqual([unaffected.key]);
+  expect(afterRemoval.sizeBytes).toBeLessThan(invalid.sizeBytes);
+});
+
+test("protects invalid entries referenced by active and quarantined journals", async () => {
+  const f = await fixture(), prepared = await prepare({ stateRoot: f.stateRoot, layout: f.layout, descriptor: f.descriptor, minimumFreeBytes: 1 });
+  await writeFile(prepared.interpreterHostPath, "changed");
+  let lease = await acquireStateRoot(f.stateRoot);
+  const journal = await createJobJournal(lease, "unfinished", prepared.key);
+  await lease.release();
+
+  await expect(prepare({ stateRoot: f.stateRoot, layout: f.layout, descriptor: f.descriptor, minimumFreeBytes: 1 })).rejects.toThrow("unfinished job");
+  lease = await acquireStateRoot(f.stateRoot);
+  await expect(removePreparedEnvironments(lease, [prepared.key], new Set())).rejects.toThrow("unfinished job");
+  await lease.release();
+
+  const data = JSON.parse(await readFile(join(journal.path, "journal.json"), "utf8"));
+  data.status = "quarantined";
+  await writeFile(join(journal.path, "journal.json"), JSON.stringify(data) + "\n");
+  await expect(prepare({ stateRoot: f.stateRoot, layout: f.layout, descriptor: f.descriptor, minimumFreeBytes: 1 })).rejects.toThrow("unfinished job");
+  lease = await acquireStateRoot(f.stateRoot);
+  await expect(removePreparedEnvironments(lease, [prepared.key], new Set())).rejects.toThrow("unfinished job");
+  await lease.release();
+});
+
+test("recovers a prepared entry after its protected state root moves", async () => {
+  const f = await fixture(), original = await prepare({ stateRoot: f.stateRoot, layout: f.layout, descriptor: f.descriptor, minimumFreeBytes: 1 });
+  const moved = join(f.parent, "moved-state");
+  await rename(f.stateRoot, moved);
+  expect((await inspectPreparedCache(moved)).invalid).toEqual([{ key: original.key, error: expect.stringContaining("cache location") }]);
+  const repaired = await prepare({ stateRoot: moved, layout: f.layout, descriptor: f.descriptor, minimumFreeBytes: 1 });
+  expect(repaired.rootfs.startsWith(moved)).toBe(true);
+  expect((await inspectPreparedCache(moved)).invalid).toEqual([]);
+});
+
+test("fails closed on malformed and symlinked prepared cache children", async () => {
+  const f = await fixture();
+  let lease = await acquireStateRoot(f.stateRoot);
+  await lease.release();
+  const preparedRoot = join(f.stateRoot, "prepared"), malformed = join(preparedRoot, "not-a-key");
+  await mkdir(malformed, { mode: 0o700 });
+  await expect(inspectPreparedCache(f.stateRoot)).rejects.toThrow("Unsafe prepared cache entry");
+  await rm(malformed, { recursive: true });
+
+  const key = "a".repeat(64), target = join(f.parent, "target");
+  await mkdir(target, { mode: 0o700 });
+  await symlink(target, join(preparedRoot, key));
+  await expect(inspectPreparedCache(f.stateRoot)).rejects.toThrow("Unsafe prepared cache entry");
+  lease = await acquireStateRoot(f.stateRoot);
+  await expect(removePreparedEnvironments(lease, [key], new Set())).rejects.toThrow("protected operator-owned directory");
+  await lease.release();
+});
+
 test("inspects and explicitly removes bounded interrupted preparations", async () => {
   const f = await fixture();
   const lease = await acquireStateRoot(f.stateRoot), name = `.prepare-${"a".repeat(64)}-${"b".repeat(16)}`;
@@ -101,6 +179,7 @@ test("inspects and explicitly removes bounded interrupted preparations", async (
   const inspection = await inspectPreparedCache(f.stateRoot);
   expect(inspection.incomplete).toEqual([name]);
   expect(inspection.entries).toEqual([]);
+  expect(inspection.invalid).toEqual([]);
   expect(await removeIncompletePreparations(lease)).toEqual([name]);
   await lease.release();
 });

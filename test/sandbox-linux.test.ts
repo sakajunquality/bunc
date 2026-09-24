@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { doctorLinuxSandbox, recoverLinuxSandbox } from "../src/sandbox/linux.ts";
+import { doctorLinuxSandbox, hasCgroupV2, recoverLinuxSandbox, requireCgroupKill } from "../src/sandbox/linux.ts";
 import { SANDBOX_SECCOMP_REVISION, sandboxAllowedSyscalls } from "../src/sandbox/seccomp.ts";
+import { preparationCompletionError } from "../src/sandbox/preparation.ts";
 
 const temporary: string[] = [];
 afterEach(() => { for (const path of temporary.splice(0)) rmSync(path, { recursive: true, force: true }); });
@@ -26,6 +27,28 @@ describe("fixed Linux sandbox profile", () => {
     expect(report.checks.length).toBeGreaterThanOrEqual(5);
     expect(new Set(report.checks.map(check => check.name)).size).toBe(report.checks.length);
     expect(report.ok).toBe(report.checks.every(check => check.ok));
+  });
+
+  test("cgroup v2 root detection does not require the non-root cgroup.kill file", () => {
+    const root = mkdtempSync(join(tmpdir(), "bunc-cgroup-files-")); temporary.push(root);
+    writeFileSync(join(root, "cgroup.controllers"), "cpu memory pids\n");
+    expect(hasCgroupV2(root)).toBe(true);
+    expect(() => requireCgroupKill(root)).toThrow("cgroup.kill is unavailable");
+    const child = join(root, "probe"); mkdirSync(child); writeFileSync(join(child, "cgroup.kill"), "");
+    expect(() => requireCgroupKill(child)).not.toThrow();
+  });
+
+  test("preparation cleanup failure retains the primary failure and cause", () => {
+    const primary = new Error("preparation child failed"), cleanup = new Error("cgroup remained populated");
+    const combined = preparationCompletionError(primary, [cleanup], false);
+    expect(combined).toBeInstanceOf(AggregateError);
+    expect((combined as AggregateError).errors).toEqual([primary, cleanup]);
+    expect((combined as Error).cause).toBe(primary);
+    expect((combined as Error).message).toContain(primary.message);
+    expect(preparationCompletionError(primary, [], false)).toBe(primary);
+    expect(preparationCompletionError(undefined, [], true)).toBeUndefined();
+    const cleanupOnly = preparationCompletionError(undefined, [cleanup], true) as AggregateError;
+    expect(cleanupOnly.errors).toEqual([cleanup]);
   });
 
   test("recovery rejects traversal before considering a cgroup target", async () => {

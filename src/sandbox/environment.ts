@@ -4,7 +4,7 @@ import { chmod, lstat, mkdir, open, readFile, readdir, rename, rm, statfs, write
 import { isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { canonicalJSON, assertDigest, sha256 } from "../oci/digest.ts";
 import { imagePath, unpack, type UnpackLimits } from "../rootfs.ts";
-import { acquireStateRoot, type StateRootLease } from "./state.ts";
+import { acquireStateRoot, preparedEnvironmentReferences, type StateRootLease } from "./state.ts";
 
 export const PREPARATION_FORMAT = "sandbox-rootfs-v1" as const;
 export const SANDBOX_UID = 65532 as const;
@@ -98,8 +98,14 @@ export interface PreparationResourceLimits {
 
 export type PreparationExecutor = (work: PreparationWork, limits: PreparationResourceLimits) => Promise<void>;
 
+export interface InvalidPreparedEnvironment {
+  key: string;
+  error: string;
+}
+
 export interface PreparedCacheInspection {
   entries: PreparedEnvironment[];
+  invalid: InvalidPreparedEnvironment[];
   incomplete: string[];
   sizeBytes: number;
 }
@@ -278,10 +284,25 @@ function parsePreparedMetadata(value: unknown): PreparedMetadata {
   return { ...item, descriptor, descriptorDigest, interpreterMetadata: parseFileMetadata(item.interpreterMetadata) } as PreparedMetadata;
 }
 
-async function openEntry(stateRoot: string, key: string): Promise<PreparedEnvironment> {
+async function preparedEntryDirectory(stateRoot: string, key: string): Promise<string> {
   if (!keyPattern.test(key)) throw new Error("Invalid prepared environment key");
   const entry = join(stateRoot, "prepared", key), info = await lstat(entry);
   if (!info.isDirectory() || info.isSymbolicLink() || (typeof process.geteuid === "function" && info.uid !== process.geteuid()) || (info.mode & 0o077) !== 0) throw new Error("Prepared cache entry is not a protected operator-owned directory");
+  return entry;
+}
+
+function inspectionError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/\s+/g, " ").slice(0, 512);
+}
+
+async function syncPreparedDirectory(stateRoot: string): Promise<void> {
+  const directory = await open(join(stateRoot, "prepared"), "r");
+  try { await directory.sync(); } finally { await directory.close(); }
+}
+
+async function openEntry(stateRoot: string, key: string): Promise<PreparedEnvironment> {
+  const entry = await preparedEntryDirectory(stateRoot, key);
   const metadata = parsePreparedMetadata(await boundedJSON(join(entry, "prepared.json"), MAX_PREPARED_METADATA_BYTES));
   const rootfs = join(entry, "rootfs"), rootInfo = await lstat(rootfs);
   if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw new Error("Prepared rootfs is not a real directory");
@@ -313,10 +334,22 @@ interface PreparationLimits {
 
 async function prepareWithLease(lease: StateRootLease, layout: string, descriptor: EnvironmentDescriptor, limits: PreparationLimits, executor: PreparationExecutor): Promise<PreparedEnvironment> {
   const key = preparedEnvironmentKey(descriptor), destination = join(lease.root, "prepared", key);
+  let invalidEntry: unknown, replaceInvalidEntry = false;
   try { return await openEntry(lease.root, key); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-  const cacheBefore = await inspectPreparedCache(lease.root), before = cacheBefore.entries;
-  if (before.length + cacheBefore.incomplete.length >= limits.maxPreparedEntries) throw new Error("Prepared environment entry capacity is exhausted");
+  catch (error) {
+    try { await preparedEntryDirectory(lease.root, key); invalidEntry = error; replaceInvalidEntry = true; }
+    catch (directoryError) {
+      if ((directoryError as NodeJS.ErrnoException).code !== "ENOENT") throw directoryError;
+    }
+  }
+  if (replaceInvalidEntry) {
+    const referenced = await preparedEnvironmentReferences(lease);
+    if (referenced.has(key)) throw new Error(`Cannot replace invalid prepared environment referenced by an unfinished job: ${key}`, { cause: invalidEntry });
+    await rm(destination, { recursive: true });
+    await syncPreparedDirectory(lease.root);
+  }
+  const cacheBefore = await inspectPreparedCache(lease.root);
+  if (cacheBefore.entries.length + cacheBefore.invalid.length + cacheBefore.incomplete.length >= limits.maxPreparedEntries) throw new Error("Prepared environment entry capacity is exhausted");
   if (cacheBefore.sizeBytes >= limits.maxPreparedBytes) throw new Error("Prepared environment byte capacity is exhausted");
   const preparationDiskBytes = limits.maxPreparedBytes - cacheBefore.sizeBytes;
   const filesystem = await statfs(join(lease.root, "prepared"));
@@ -367,8 +400,7 @@ async function prepareWithLease(lease: StateRootLease, layout: string, descripto
     try { await stagingDirectory.sync(); } finally { await stagingDirectory.close(); }
     await chmod(staging, 0o700);
     await rename(staging, destination);
-    const directory = await open(join(lease.root, "prepared"), "r");
-    try { await directory.sync(); } finally { await directory.close(); }
+    await syncPreparedDirectory(lease.root);
     return await openEntry(lease.root, key);
   } catch (error) {
     // A bounded executor leaves this protected marker only when its cgroup or
@@ -405,32 +437,35 @@ export async function inspectPreparedEnvironments(stateRoot: string): Promise<Pr
 }
 
 export async function inspectPreparedCache(stateRoot: string): Promise<PreparedCacheInspection> {
-  const root = resolve(stateRoot), directory = join(root, "prepared"), entries: PreparedEnvironment[] = [], incomplete: string[] = [];
+  const root = resolve(stateRoot), directory = join(root, "prepared"), entries: PreparedEnvironment[] = [], invalid: InvalidPreparedEnvironment[] = [], incomplete: string[] = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     if (entry.name.startsWith(".prepare-")) {
       if (!entry.isDirectory() || entry.isSymbolicLink() || !/^\.prepare-[a-f0-9]{64}-[a-f0-9]{16}$/.test(entry.name)) throw new Error(`Unsafe incomplete preparation entry: ${entry.name}`);
       incomplete.push(entry.name); continue;
     }
     if (!entry.isDirectory() || entry.isSymbolicLink() || !keyPattern.test(entry.name)) throw new Error(`Unsafe prepared cache entry: ${entry.name}`);
-    entries.push(await openEntry(root, entry.name));
+    await preparedEntryDirectory(root, entry.name);
+    try { entries.push(await openEntry(root, entry.name)); }
+    catch (error) { invalid.push({ key: entry.name, error: inspectionError(error) }); }
   }
   const usage = await treeUsage(directory);
-  return { entries: entries.sort((a, b) => a.key.localeCompare(b.key)), incomplete: incomplete.sort(), sizeBytes: usage.sizeBytes };
+  return { entries: entries.sort((a, b) => a.key.localeCompare(b.key)), invalid: invalid.sort((a, b) => a.key.localeCompare(b.key)), incomplete: incomplete.sort(), sizeBytes: usage.sizeBytes };
 }
 
 export async function removePreparedEnvironments(lease: StateRootLease, keys: readonly string[], activeKeys: ReadonlySet<string>, maxEntries = 128): Promise<string[]> {
   if (lease.released) throw new Error("State-root lease has already been released");
   if (!Number.isSafeInteger(maxEntries) || maxEntries <= 0 || keys.length > maxEntries) throw new Error("Prepared cleanup exceeds its entry limit");
+  const referenced = await preparedEnvironmentReferences(lease);
   const removed: string[] = [];
   for (const key of keys) {
     if (!keyPattern.test(key)) throw new Error(`Invalid prepared environment key: ${key}`);
     if (activeKeys.has(key)) throw new Error(`Prepared environment is referenced by an active job: ${key}`);
-    const path = join(lease.root, "prepared", key), info = await lstat(path);
-    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(`Unsafe prepared cache entry: ${key}`);
-    await openEntry(lease.root, key);
+    if (referenced.has(key)) throw new Error(`Prepared environment is referenced by an unfinished job: ${key}`);
+    const path = await preparedEntryDirectory(lease.root, key);
     await rm(path, { recursive: true });
     removed.push(key);
   }
+  if (removed.length) await syncPreparedDirectory(lease.root);
   return removed;
 }
 

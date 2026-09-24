@@ -18,6 +18,12 @@ interface PreparationMarker {
 
 export interface PreparationRecovery { complete: boolean; errors: string[]; recovered: string[] }
 
+export function preparationCompletionError(primary: unknown, cleanupErrors: readonly unknown[], success: boolean): unknown | undefined {
+  if (!cleanupErrors.length) return success ? undefined : primary;
+  const detail = (primary instanceof Error ? primary.message : String(primary)).slice(0, 2000);
+  return new AggregateError(success ? cleanupErrors : [primary, ...cleanupErrors], success ? "Preparation succeeded but cleanup was incomplete" : `Preparation failed: ${detail}; cleanup was incomplete`, { cause: primary });
+}
+
 function writeControl(path: string, name: string, value: string | number) { writeFileSync(join(path, name), String(value)); }
 function populated(path: string): boolean {
   try { return /^populated 1$/m.test(readFileSync(join(path, "cgroup.events"), "utf8")); }
@@ -85,7 +91,7 @@ export function createPreparationExecutor(cgroupParentInput: string): Preparatio
     const marker: PreparationMarker = { schemaVersion: 1, ownerToken: token, cgroupParent: parent, cgroupPath: cgroup };
     writeFileSync(markerPath, JSON.stringify(marker), { mode: 0o600, flag: "wx" });
     writeFileSync(workPath, JSON.stringify(work), { mode: 0o600, flag: "wx" });
-    let guardianPid: number | undefined, livenessFd: number | undefined, created = false, success = false;
+    let guardianPid: number | undefined, livenessFd: number | undefined, created = false, success = false, primary: unknown;
     const cleanupErrors: unknown[] = [];
     try {
       mkdirSync(cgroup, { mode: 0o755 }); created = true;
@@ -115,6 +121,8 @@ export function createPreparationExecutor(cgroupParentInput: string): Preparatio
         throw new Error(oom ? "Environment preparation exceeded its memory limit" : `Environment preparation child failed (${signal ? `signal ${signal}` : `exit ${code}`})${diagnostics ? `: ${diagnostics}` : ""}`);
       }
       success = true;
+    } catch (error) {
+      primary = error;
     } finally {
       if (created) {
         try { kill(cgroup); if (!await waitEmpty(cgroup)) throw new Error("Preparation cgroup remained populated"); } catch (error) { cleanupErrors.push(error); }
@@ -126,8 +134,9 @@ export function createPreparationExecutor(cgroupParentInput: string): Preparatio
         try { unlinkSync(workPath); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") cleanupErrors.push(error); }
         try { unlinkSync(markerPath); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") cleanupErrors.push(error); }
       }
-      if (cleanupErrors.length) throw new AggregateError(cleanupErrors, success ? "Preparation succeeded but cleanup was incomplete" : "Preparation failed and cleanup was incomplete");
     }
+    const completionError = preparationCompletionError(primary, cleanupErrors, success);
+    if (!success || completionError !== undefined) throw completionError;
   };
 }
 

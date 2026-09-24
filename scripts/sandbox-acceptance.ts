@@ -11,12 +11,17 @@ import { runLinuxEngineProbes } from "./sandbox-linux-probes.ts";
 import { createRunner } from "../src/sandbox/sdk.ts";
 import { DEFAULT_SANDBOX_POLICY } from "../src/sandbox/policy.ts";
 import { runSandboxStateAcceptance } from "./sandbox-state-acceptance.ts";
+import { exportSandboxEvidence } from "./sandbox-evidence.ts";
 
 const { values } = parseArgs({ args: Bun.argv.slice(2), options: { standalone: { type: "boolean" }, benchmark: { type: "boolean" } } });
 const command = values.standalone ? ["/runtime/bunc"] : [process.execPath, "/runtime/bunc.js"];
 const lab = "/lab", state = join(lab, "state"), environment = join(lab, "environment.json");
 const cgroupParent = "/sys/fs/cgroup/bunc-jobs";
 await mkdir(lab, { recursive: true }); await mkdir("/results", { recursive: true });
+// Job results remain operator-owned inside the disposable host. Export to the
+// runner-owned bind mount only after execution, including on assertion failure.
+let acceptanceError: unknown;
+try {
 const platform = { os: "linux" as const, architecture: process.arch === "arm64" ? "arm64" as const : "amd64" as const };
 const image = await resolveBase(new LayoutSource("/image"), platform, new BlobStore(join(lab, "metadata")));
 // The already-running test harness needs no further host Bun exec. Removing it
@@ -241,3 +246,13 @@ const evidence = { schemaVersion: 1, status: "passed", experimental: true, platf
 };
 await writeFile("/results/acceptance.json", JSON.stringify(evidence, null, 2) + "\n");
 console.log(`Sandbox acceptance passed (${checks.length} checks).`);
+} catch (error) {
+  acceptanceError = error;
+  throw error;
+} finally {
+  try { await exportSandboxEvidence("/results", "/evidence"); }
+  catch (error) {
+    if (acceptanceError !== undefined) throw new AggregateError([acceptanceError, error], "Acceptance failed and evidence export also failed", { cause: acceptanceError });
+    throw error;
+  }
+}

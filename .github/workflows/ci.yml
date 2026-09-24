@@ -54,6 +54,7 @@ jobs:
           include-hidden-files: true
           path: |
             .bunc-output/sandbox-*/*.log
+            .bunc-output/sandbox-*/lab.json
             .bunc-output/sandbox-*/results/**
   kind:
     strategy:

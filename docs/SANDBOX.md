@@ -19,7 +19,10 @@ Requirements: Bun 1.4.2, a native arm64 or amd64 machine, and Docker or Apple
 Container. The launcher creates an outer host with resource limits and broad
 privileges so the inner runtime can create namespaces, mounts, cgroups, and
 device BPF. Only the image, runtime bundle, and synthetic result directory are
-mounted. The first image build requires network access; job execution does not.
+mounted. Each default invocation builds a fresh image from the current example
+sources and may require network access; job execution does not. Pass
+`--layout /absolute/path/to/image` to `scripts/sandbox-lab.ts` to explicitly reuse
+an existing layout.
 
 ```sh
 bun run test:sandbox:docker
@@ -37,6 +40,11 @@ preparation is measured separately. It is a local measurement, not a service
 latency guarantee. See [the example request](../examples/execute/request.json).
 The [qualification record](SANDBOX_VALIDATION.md) describes measured coverage,
 platform limits, and the benchmark method.
+
+The lab writes job results to a private directory inside the disposable host,
+then exports the receipts to the mounted evidence directory with the invoking
+host user's ownership. Runtime result-directory ownership checks remain active
+on both native Linux runners and macOS container backends.
 
 ## Operator configuration
 
@@ -104,6 +112,16 @@ immutable cache entry. A bounded trusted preparation child has separate memory
 and deadline controls. Warm jobs reuse the prepared tree and do not unpack it.
 The unpacker remains a trusted-image parser, not a hardened hostile-image
 service. The operator must additionally bound the outer host's disk and memory.
+
+Cache inspection reports verified entries in `entries` and protected entries
+that fail metadata or content verification in `invalid`. Each invalid record
+contains its cache key and a bounded error message, and its storage still counts
+toward cache capacity. An operator can remove an invalid inactive entry with
+`--remove`, or run the trusted `prepare` command again with the same descriptor
+to replace that exact entry. Both paths refuse entries referenced by active or
+quarantined job journals; run `gc` and resolve any remaining quarantine first.
+Malformed names, symlinked entries, foreign ownership, and broadly accessible
+entry directories make inspection and removal fail closed for operator review.
 
 One advisory kernel lock covers the entire job or preparation per state root.
 Concurrent work receives `BUSY`; there is no queue. Multiple state roots do not

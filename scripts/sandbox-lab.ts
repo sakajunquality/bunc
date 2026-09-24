@@ -16,7 +16,7 @@ await mkdir(output, { recursive: true });
 const work = await mkdtemp(join(output, `sandbox-${backend}-`));
 const runtime = join(work, "runtime"), results = join(work, "results");
 await mkdir(runtime); await mkdir(results);
-const layout = resolve(values.layout ?? join(output, "image"));
+const layout = resolve(values.layout ?? join(work, "image"));
 const name = `bunc-sandbox-${backend}-${process.pid}`;
 const hostImage = "docker.io/oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895";
 
@@ -66,7 +66,7 @@ try {
   const child = Bun.spawn([tool, "run", "--name", name, ...platformOptions,
     "--env", "OUTER_SECRET_SENTINEL=not-in-job", "--env", `BUNC_LAB_BACKEND=${backend}`,
     "--mount", mount(runtime, "/runtime"), "--mount", mount(layout, "/image"),
-    "--mount", mount(results, "/results", false), "--entrypoint", "/bin/sh", hostImage, "-c", entrypoint,
+    "--mount", mount(results, "/evidence", false), "--entrypoint", "/bin/sh", hostImage, "-c", entrypoint,
   ], { cwd: repo, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   const timeout = setTimeout(cancel, values.benchmark ? 600_000 : 300_000);
   try {
