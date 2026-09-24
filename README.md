@@ -12,6 +12,13 @@ for runc or a conformant implementation of the OCI Runtime Specification.** Use 
 images in a disposable development environment. It is not a production security
 boundary; see [SECURITY.md](SECURITY.md).
 
+An additional **experimental offline job runner** executes short agent-written
+Bun programs with supplied input files, bounded resources, fresh scratch storage,
+and structured results. Try `bun run test:sandbox:docker` or read the
+[sandbox operator/SDK guide](docs/SANDBOX.md) and
+[JSON transform example](examples/execute/README.md). This shares the Linux
+kernel and is limited to disposable laboratory hosts, not production isolation.
+
 ## Quick start on macOS
 
 You need Bun **1.4.2** and either Docker Desktop or

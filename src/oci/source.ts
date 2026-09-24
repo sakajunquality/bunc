@@ -9,6 +9,11 @@ export interface ImageSource {
   blob(d: Descriptor): Promise<AsyncIterable<Uint8Array>>;
 }
 
+export interface ResolveBaseOptions {
+  /** Aggregate compressed layer bytes allowed before any layer body is opened. */
+  maxLayerBytes?: number;
+}
+
 async function layoutMetadata(path: string, limit: number): Promise<Buffer> {
   const chunks: Buffer[] = []; let size = 0;
   for await (const chunk of createReadStream(path)) {
@@ -104,7 +109,8 @@ export function validateImageConfig(value: unknown, platform: Platform, layerCou
   return config as unknown as ImageConfig;
 }
 
-export async function resolveBase(source: ImageSource, platform: Platform, store: BlobStore): Promise<BaseImage> {
+export async function resolveBase(source: ImageSource, platform: Platform, store: BlobStore, options: ResolveBaseOptions = {}): Promise<BaseImage> {
+  if (options.maxLayerBytes !== undefined && (!Number.isSafeInteger(options.maxLayerBytes) || options.maxLayerBytes <= 0)) throw new Error("maxLayerBytes must be a positive safe integer");
   const fail = (error: unknown): never => {
     if (error instanceof MissingLayoutBlobError) throw new Error(`${error.message} required for ${platform.os}/${platform.architecture}; prepare the base again with --platform ${platform.os}/${platform.architecture}, or restore the missing blob`, { cause: error });
     throw error;
@@ -148,6 +154,10 @@ export async function resolveBase(source: ImageSource, platform: Platform, store
     return { descriptor: d, manifest: { schemaVersion: 2, mediaType: d.mediaType, config, layers: value.layers.map(descriptor) } };
   }
   const selected = await select(root.descriptor, 0);
+  if (options.maxLayerBytes !== undefined) {
+    const layerBytes = selected.manifest.layers.reduce((sum, layer) => sum + layer.size, 0);
+    if (!Number.isSafeInteger(layerBytes) || layerBytes > options.maxLayerBytes) throw new Error("Image compressed content exceeds preparation limit");
+  }
   const config = validateImageConfig(await metadata(selected.manifest.config), platform, selected.manifest.layers.length);
   const layers: Descriptor[] = [];
   for (const original of selected.manifest.layers) {

@@ -24,6 +24,18 @@ native libc calls before exec; this remains experimental. Never configure the
 handler as a cluster's default runtime or install it on a shared/production node.
 See [the supported profile](examples/kind/README.md).
 
+The separate `sandbox --experimental-sandbox` path runs short offline Bun jobs
+in disposable hosts. It adds a private network namespace, a native seccomp
+allowlist, cgroup v2 CPU/memory/task/device controls, fixed nonroot identity,
+read-only code/inputs/root, bounded shared scratch, and descriptor-anchored
+artifact collection. A native guardian kills the job on supervisor death or a
+hard deadline. Preparation has its own resource limits. These controls and
+adversarial regression tests are experimental; they do not change the trust
+claim above. There is no user namespace or microVM boundary for the inner job.
+Only trusted operators select approved images, policies, state/cgroup paths,
+and result destinations. Guest output is untrusted content, never privileged
+configuration. See [the sandbox guide](docs/SANDBOX.md) for limits and recovery.
+
 Automated checks are regression tests for supported behavior, not a security
 audit or proof of OCI Runtime Specification compliance. If you report a problem,
 use a minimal synthetic reproducer and remove credentials and private image
